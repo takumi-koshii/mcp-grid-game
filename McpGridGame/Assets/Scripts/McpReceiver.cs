@@ -119,6 +119,12 @@ public class MCPReceiver : MonoBehaviour
                     response.OutputStream.Close();
 
                     Debug.Log("📤 応答を返しました: " + responseJson);
+                    
+                    if (GameManager.Instance.isCleared)
+                    {
+                        Debug.Log("ゲームをリセットします...");
+                        GameManager.Instance.ResetStage();
+                    }
                 }
                 else
                 {

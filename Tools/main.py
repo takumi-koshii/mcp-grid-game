@@ -8,7 +8,7 @@ MCP_URL = "http://127.0.0.1:8080/mcp"
 mcp_message = {
     "role": "user",
     "name": "player_move",
-    "content": "move north"
+    "content": "move east"
 }
 
 # POST リクエストを送信

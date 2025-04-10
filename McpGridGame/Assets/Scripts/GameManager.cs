@@ -17,10 +17,14 @@ public class GameManager : MonoBehaviour
     public Vector2Int doorGridPos;
     public bool hasKey = false;
     public string lastInput = ""; // ✅ 直前の入力内容を保持
+    public bool isCleared = false;
 
     private GameObject playerObj;
     private GameObject keyObj;
     private GameObject doorObj;
+    private bool requestResetStage = false;
+    private int counter = 0;
+    private const int maxCounter = 180; // 最大カウンター値
 
     private List<Vector2Int> availablePositions = new List<Vector2Int>();
 
@@ -33,6 +37,28 @@ public class GameManager : MonoBehaviour
     {
         InitializeGrid();
         SpawnObjects();
+    }
+    
+    void FixedUpdate()
+    {
+        if (requestResetStage)
+        {
+            counter = (counter + 1) % maxCounter;
+            if (counter == 0)
+            {
+                DestroyObjects();
+                var clearText = GameObject.Find("ClearText")?.GetComponent<TextMeshProUGUI>();
+                if (clearText != null)
+                {
+                    clearText.text = "";
+                }
+                isCleared = false;
+                hasKey = false;
+                InitializeGrid();
+                SpawnObjects();
+                requestResetStage = false;
+            }
+        }
     }
 
     void InitializeGrid()
@@ -71,6 +97,13 @@ public class GameManager : MonoBehaviour
         keyObj = Instantiate(keyPrefab, GridUtils.GridToWorld(keyGridPos), Quaternion.identity);
         doorObj = Instantiate(doorPrefab, GridUtils.GridToWorld(doorGridPos), Quaternion.identity);
     }
+    
+    void DestroyObjects()
+    {
+        if (playerObj != null) Destroy(playerObj);
+        if (keyObj != null) Destroy(keyObj);
+        if (doorObj != null) Destroy(doorObj);
+    }
 
     public void MovePlayer(Vector2Int direction)
     {
@@ -104,7 +137,7 @@ public class GameManager : MonoBehaviour
                 clearText.text = "Game Clear!!";
             }
 
-            return;
+            isCleared = true;
         }
     }
 
@@ -120,10 +153,18 @@ public class GameManager : MonoBehaviour
     // ✅ MCP 応答用のゲーム状態を文字列で返す
     public string GetGameStateString()
     {
+        string status = isCleared ? "cleared" : "in_progress";
+        
         return $"Player: ({playerGridPos.x},{playerGridPos.y})\n" +
                $"HasKey: {hasKey.ToString().ToLower()}\n" +
                $"Key: ({keyGridPos.x},{keyGridPos.y})\n" +
                $"Door: ({doorGridPos.x},{doorGridPos.y})\n" +
-               $"LastInput: {lastInput}";
+               $"LastInput: {lastInput}\n" +
+               $"Status: {status}\n";
+    }
+    
+    public void ResetStage()
+    {
+        requestResetStage = true;
     }
 }
