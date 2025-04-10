@@ -9,7 +9,7 @@ public class McpReceiver : MonoBehaviour
     private HttpListener listener;
     private const string Address = "127.0.0.1";
     private const int Port = 8080;
-    private readonly string _uri = $"https://{Address}:{Port}/mcp/";
+    private readonly string _uri = $"http://{Address}:{Port}/mcp/";
 
     void Start()
     {
@@ -32,6 +32,8 @@ public class McpReceiver : MonoBehaviour
 
     private void OnRequest(IAsyncResult result)
     {
+        Debug.Log("🟡 OnRequest が呼ばれました");
+        
         if (listener == null || !listener.IsListening) return;
 
         HttpListenerContext context = listener.EndGetContext(result);
@@ -39,11 +41,17 @@ public class McpReceiver : MonoBehaviour
 
         // リクエスト処理は Unity のメインスレッドで行うため、Invoke を使う
         // Unity 2020 以降では UnityMainThreadDispatcher を使わずとも Invoke で代用可能
-        UnityMainThreadInvoker.Invoke(() => ProcessRequest(context));
+        UnityMainThreadInvoker.Invoke(() =>
+        {
+            Debug.Log("🟢 UnityMainThreadInvoker.Invoke が呼ばれました");
+            ProcessRequest(context);
+        });
     }
 
     private void ProcessRequest(HttpListenerContext context)
     {
+        Debug.Log("🔵 ProcessRequest 開始");
+        
         if (context.Request.HttpMethod != "POST")
         {
             context.Response.StatusCode = 405;
