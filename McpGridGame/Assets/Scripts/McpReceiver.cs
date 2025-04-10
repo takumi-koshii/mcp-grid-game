@@ -1,105 +1,152 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
 using System.Text;
+using System.Threading;
 using UnityEngine;
 
-public class McpReceiver : MonoBehaviour
+public class MCPReceiver : MonoBehaviour
 {
     private HttpListener listener;
-    private const string Address = "127.0.0.1";
-    private const int Port = 8080;
-    private readonly string _uri = $"http://{Address}:{Port}/mcp/";
+    private Thread listenerThread;
+    private readonly Queue<Action> mainThreadActions = new Queue<Action>();
+    private const string Uri = "http://127.0.0.1:8080/mcp/";
 
     void Start()
     {
         listener = new HttpListener();
-        listener.Prefixes.Add(_uri);
+        listener.Prefixes.Add(Uri);
         listener.Start();
-        listener.BeginGetContext(OnRequest, null);
 
-        Debug.Log($"✅ MCP サーバーが起動しました: {_uri}");
+        listenerThread = new Thread(HandleIncomingConnections);
+        listenerThread.Start();
+
+        Debug.Log($"✅ MCPReceiver started on {Uri}");
     }
 
     void OnApplicationQuit()
     {
-        if (listener != null && listener.IsListening)
-        {
-            listener.Stop();
-            listener.Close();
-        }
+        listener.Stop();
+        listenerThread.Abort();
     }
 
-    private void OnRequest(IAsyncResult result)
+    void Update()
     {
-        Debug.Log("🟡 OnRequest が呼ばれました");
-        
-        if (listener == null || !listener.IsListening) return;
-
-        HttpListenerContext context = listener.EndGetContext(result);
-        listener.BeginGetContext(OnRequest, null); // 次のリクエストを待機
-
-        // リクエスト処理は Unity のメインスレッドで行うため、Invoke を使う
-        // Unity 2020 以降では UnityMainThreadDispatcher を使わずとも Invoke で代用可能
-        UnityMainThreadInvoker.Invoke(() =>
+        lock (mainThreadActions)
         {
-            Debug.Log("🟢 UnityMainThreadInvoker.Invoke が呼ばれました");
-            ProcessRequest(context);
-        });
-    }
-
-    private void ProcessRequest(HttpListenerContext context)
-    {
-        Debug.Log("🔵 ProcessRequest 開始");
-        
-        if (context.Request.HttpMethod != "POST")
-        {
-            context.Response.StatusCode = 405;
-            context.Response.Close();
-            return;
-        }
-
-        try
-        {
-            string body;
-            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding))
+            while (mainThreadActions.Count > 0)
             {
-                body = reader.ReadToEnd();
+                mainThreadActions.Dequeue()?.Invoke();
             }
-
-            Debug.Log("📥 受信した MCP メッセージ: " + body);
-
-            McpMessage mcpMessage = JsonUtility.FromJson<McpMessage>(body);
-            McpMessageDispatcher.Dispatch(mcpMessage.name, mcpMessage.content);
-
-            McpMessage responseMessage = new McpMessage
-            {
-                role = "system",
-                name = "game_state",
-                content = GameManager.Instance.GetGameStateString()
-            };
-
-            string responseJson = JsonUtility.ToJson(responseMessage);
-            byte[] buffer = Encoding.UTF8.GetBytes(responseJson);
-
-            context.Response.ContentType = "application/json";
-            context.Response.ContentEncoding = Encoding.UTF8;
-            context.Response.ContentLength64 = buffer.Length;
-            context.Response.OutputStream.Write(buffer, 0, buffer.Length);
-            context.Response.Close();
-
-            Debug.Log("📤 応答を返しました: " + responseJson);
         }
-        catch (Exception ex)
+    }
+
+    private void HandleIncomingConnections()
+    {
+        while (listener.IsListening)
         {
-            Debug.LogError("MCP リクエスト処理中にエラー: " + ex.Message);
-            context.Response.StatusCode = 500;
-            context.Response.Close();
+            try
+            {
+                var context = listener.GetContext();
+                var request = context.Request;
+
+                if (request.HttpMethod == "POST")
+                {
+                    string json;
+                    using (var reader = new StreamReader(request.InputStream, request.ContentEncoding))
+                    {
+                        json = reader.ReadToEnd();
+                    }
+
+                    Debug.Log("📥 受信した MCP メッセージ: " + json);
+
+                    MCPMessage message = JsonUtility.FromJson<MCPMessage>(json);
+
+                    // メインスレッドで GameManager を操作し、応答を生成
+                    string responseJson = null;
+
+                    var waitHandle = new AutoResetEvent(false);
+
+                    lock (mainThreadActions)
+                    {
+                        mainThreadActions.Enqueue(() =>
+                        {
+                            try
+                            {
+                                if (message.name == "player_move")
+                                {
+                                    Vector2Int dir = ParseDirection(message.content);
+                                    GameManager.Instance.MovePlayer(dir);
+                                }
+
+                                var responseMessage = new MCPMessage
+                                {
+                                    role = "system",
+                                    name = "game_state",
+                                    content = GameManager.Instance.GetGameStateString()
+                                };
+
+                                responseJson = JsonUtility.ToJson(responseMessage);
+                            }
+                            catch (Exception ex)
+                            {
+                                Debug.LogError("❌ GameManager 処理中にエラー: " + ex.Message);
+                                responseJson = JsonUtility.ToJson(new MCPMessage
+                                {
+                                    role = "system",
+                                    name = "error",
+                                    content = "Internal error"
+                                });
+                            }
+                            finally
+                            {
+                                waitHandle.Set();
+                            }
+                        });
+                    }
+
+                    // メインスレッドの処理が終わるまで待機
+                    waitHandle.WaitOne();
+
+                    // 応答を返す
+                    var response = context.Response;
+                    byte[] buffer = Encoding.UTF8.GetBytes(responseJson);
+                    response.ContentType = "application/json";
+                    response.ContentEncoding = Encoding.UTF8;
+                    response.ContentLength64 = buffer.Length;
+                    response.OutputStream.Write(buffer, 0, buffer.Length);
+                    response.OutputStream.Close();
+
+                    Debug.Log("📤 応答を返しました: " + responseJson);
+                }
+                else
+                {
+                    context.Response.StatusCode = 405;
+                    context.Response.Close();
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogError("❌ MCPReceiver error: " + e.Message);
+            }
+        }
+    }
+
+    private Vector2Int ParseDirection(string content)
+    {
+        switch (content.Trim().ToLower())
+        {
+            case "move north": return Vector2Int.up;
+            case "move south": return Vector2Int.down;
+            case "move east": return Vector2Int.right;
+            case "move west": return Vector2Int.left;
+            default: return Vector2Int.zero;
         }
     }
 
     [Serializable]
-    public class McpMessage
+    public class MCPMessage
     {
         public string role;
         public string name;
